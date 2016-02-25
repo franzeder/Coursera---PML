@@ -1,0 +1,185 @@
+---
+title: 'Practical Machine Learning: Course Project'
+author: "Franz Eder"
+date: "25 February 2016"
+output: html_document
+---
+
+```{r knitr_options}
+# set seed for reproducability on global level
+set.seed(1401014)
+```
+
+## The Assignment
+
+In course of the *Coursera* MOOC **Pratical Machine Learning**, it was our task in the
+final Course Project to use the *Weight Lifting Exercise Dataset* by Velloso et al. (2013)
+for building a model and predicting the manner  in which six participants did perform
+barbell lifts (the dependent variable -- `classe`) in 20 different test cases. We are
+allowed to use any of the remaining variables in the dataset. 
+
+The report should especially explain the following points:
+
+1. How was the model build?
+2. How was cross validation used?
+3. What is the expected out of sample error?
+4. Why were these choices made?
+
+## Getting and Cleaning the Data
+
+First, I downloaded the datasets and saved them to the data.frames `training` and
+`testing`.
+
+```{r loading the data, cache = TRUE, message = FALSE}
+require(RCurl)
+fileUrl1 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(url = fileUrl1, destfile = "training.csv", method = "curl")
+fileUrl2 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(url = fileUrl2, destfile = "testing.csv", method = "curl")
+
+# loading data
+training <- read.csv("training.csv", header = TRUE)
+testing <- read.csv("testing.csv", header = TRUE)
+
+dim(training)
+str(training[1:25])
+```
+
+A first look at the `training` dataset shows that there are 19622 observations and
+160 variables. However, there are also a lot of `NA` and `Factor` variables. Consequently,
+I removed all varibales with more than 50 % `NA` and which were not numeric. Finally,
+I also removed the first four varibales, because these variables were only time stamps
+or row numbers.
+
+```{r cleaning the data, cache = TRUE}
+classeTrain <- training$classe
+# deleting columns where share of NAs is 50 %
+training <- training[, colSums(is.na(training)) < nrow(training) * 0.5]
+# delete all columns which are not numeric
+training <- training[sapply(training, is.numeric)]
+# remove first 4 columns
+training <- training[, -c(1:4)]
+training$classe <- classeTrain
+
+classeTest <- testing$classe
+# deleting columns where share of NAs is 50 %
+testing <- testing[, colSums(is.na(testing)) < nrow(testing) * 0.5]
+# delete all columns which are not numeric
+testing <- testing[sapply(testing, is.numeric)]
+# remove first 4 columns
+testing <- testing[, -c(1:4)]
+testing$classe <- classeTest
+```
+
+
+## Basic Exploratory Data Analysis
+
+As the correlation plot shows, there are some variables which highly corrolate with
+each other. Hence, I had to decide whether to remove them or to use methods that
+can handle this problem.
+
+```{r correlation plot, cache = TRUE, message = FALSE, fig.height = 7.5, fig.width = 7.5}
+require(corrplot)
+corrPlot <- cor(training[, -53], method = "spearman")
+corrplot(corrPlot, method = "color", type = "lower", tl.cex = .8, diag = FALSE,
+         tl.col = "grey", insig = "blank")
+```
+
+## Train and Evaluate Models
+
+To train and evaluate the models, I divided the `training` dataset into two subsets:
+a `subTraining` and a `subTesting` dataset, so that the models need not to be tested on
+the final `testing` dataset. Furthermore, I used the `trainControl` function for 
+crossvalidation, breaking the dataset in five sets.
+
+```{r building data set and cross validation, cache = TRUE, message = FALSE}
+require(caret)
+
+# Create a building data set
+inTrain <- createDataPartition(training$classe, p = 0.6, list = FALSE)
+subTraining <- training[inTrain,]
+subTesting <- training[-inTrain,]
+
+# use cross validation
+control <- trainControl(method = "cv", 5)
+```
+
+I decided to use test three models:
+
+1. `rpart`: Predicting with trees, because these models are easy to implement, 
+easy to interpret and have a better performance in nonlinear settings (see 
+[slides](https://github.com/jtleek/modules/blob/master/08_PredictionAndMachineLearning/019predictingWithTrees/index.md)).
+
+2. `gbm`: Predicting with boosting, because these models take lots of (possibly)
+weak predictors, weight them and add them up and hence get a stronger predictor
+(see [slides](https://github.com/jtleek/modules/blob/master/08_PredictionAndMachineLearning/022boosting/index.md)).
+
+3. `rf`: Predicting with random forsts, because these models have a high accuracy.
+However they are slow and tend to be overfitting (see [slides](https://github.com/jtleek/modules/blob/master/08_PredictionAndMachineLearning/021randomForests/index.md)).
+
+```{r training models, cache = TRUE, message = FALSE}
+# use parallel processing
+require(doMC)
+registerDoMC(cores = 3)
+
+modelRPART <- train(classe ~ ., method = "rpart", trControl = control, data = subTraining)
+modelGBM <- train(classe ~ ., method = "gbm", trControl = control, data = subTraining)
+modelRF <- train(classe ~ ., method = "rf", trControl = control, data = subTraining)
+```
+
+I then tested all models on the `subTesting` dataset and created a confusion matrix
+to show, how good the predictions are.
+
+```{r testing models, cache = TRUE}
+testingRPART <- predict(modelRPART, subTesting)
+confusionMatrix(subTesting$classe, testingRPART)
+
+testingGBM <- predict(modelGBM, subTesting)
+confusionMatrix(subTesting$classe, testingGBM)
+
+testingRF <- predict(modelRF, subTesting)
+confusionMatrix(subTesting$classe, testingRF)
+```
+
+As the confusion matrices show, the **prediction with trees** is the worst metthod.
+It has an accuracy of 48.75 per cent, which means the result are as good/bad as by
+predicting by chance.
+
+Predicting with **boosting** is much better. This method has an accuracy of 95.63 per
+cent and hence is almost perfect. Nevertheless, predicting with **random forests**
+is even better. It has an **accuracy of 99.04 per cent** and an **expected out of 
+sample error of 0.96 per cent**.
+
+```{r modelRF details, cache = TRUE}
+print(modelRF)
+```
+
+This model uses 27 variables for splitting at each tree node. The ten most important
+variables in this model are as follows:
+
+```{r important variables, cache = TRUE}
+varImpPlot(modelRF$finalModel, n.var = 10)
+```
+
+Consequently, I chose the Random Forest model, not just because it has the highest
+accuracy and hence the lowest expected out of sample error. I also chose this method
+because highly correlated variables do not cause multi-collinearity issues in 
+Random Forst models.
+
+
+## Applying the Best Model to Testing Dataset
+
+Finnaly, I applied the Random Forest model to the `testing` dataset and got
+the following results, which I submitted to *Course Project Prediction Quiz*:
+
+```{r final prediction, cache = TRUE}
+predict(modelRF, testing)
+```
+
+
+
+## Literature
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity
+Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference 
+in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
